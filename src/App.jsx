@@ -287,14 +287,37 @@ export default function App() {
       : { type:'document', source:{ type:'base64', media_type:'application/pdf', data:b64 } };
 
     try {
-      // ★ Gemini API 버전: 파일 데이터만 서버로 전송 (API 키는 서버에서 관리)
+      // API 키는 서버(/api/analyze)에서 관리 — 브라우저에 노출되지 않음
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: b64, mediaType: file.type })
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          system: `You are a steel mill test certificate (MTC) data extractor. Your ONLY job is to output a single valid JSON object. Do NOT write any explanation, analysis, preamble, or text of any kind before or after the JSON. Start your response with { and end with }.
+
+CRITICAL - Chemical value unit conversion (check ALL cases):
+1. Standard wt%: values already in range 0.0001 ~ 2.0 → use as-is.
+2. Single multiplier for entire table (e.g. Dongkuk Steel 동국제강): Certificate shows x1000 applied to ALL columns → divide ALL chemical values by 1,000.
+3. Per-column unit CODE notation (e.g. Hyundai Steel 현대제철): A row of single digits (2,3,4,5) above the value row: 2=×100, 3=×1,000, 4=×10,000, 5=×100,000 → divide that column accordingly.
+4. Per-column unit TEXT notation (e.g. Dongbu Steel 동부제철): Each column shows "X 1000" or "X 100" → apply per column independently.
+5. No unit notation but values abnormally large → divide by 1,000.
+Final check: ALL chemical values must be wt% (typical range 0.0001~2.0).
+
+MULTIPLE DIMENSIONS: Extract ALL thickness rows into dimensions array. Each dimension has its own chemical and mechanical block. If chemical is shared, copy into every dimension.
+
+Required JSON (output this and nothing else):
+{"steelGrade":"exact grade code e.g. SS400","manufacturer":"mill name","heatNo":"heat number","orderNo":"cert number","dimensions":[{"thickness":"e.g. 16mm","chemical":{"C":null,"Si":null,"Mn":null,"P":null,"S":null,"Cu":null,"Ni":null,"Cr":null,"Mo":null,"V":null,"Nb":null,"Ti":null,"B":null,"Ceq":null},"mechanical":{"yieldStrength":null,"tensileStrength":null,"elongation":null,"charpy":null}}]}
+
+Units: chemical=wt%, Strength=MPa, Elongation=%, Charpy=J. Use null if not found.`,
+          messages: [{ role:'user', content:[
+            part,
+            { type:'text', text:'이 철판 성적서의 화학조성과 기계적 성질을 모두 추출하여 JSON으로 반환해주세요.' }
+          ]}]
+        })
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(data.error.message);
       const txt = data.content.map(i => i.text || '').join('');
       // 자연어가 섞여 나와도 JSON 부분만 추출
       const jsonStart = txt.indexOf('{');
