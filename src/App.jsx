@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { supabase } from "./supabaseClient";
 
 const CHEM_ORDER = ['C','Si','Mn','P','S','Cu','Ni','Cr','Mo','V','Nb','Ti','B','Ceq'];
 const CHEM_LABELS = {C:'탄소 (C)',Si:'규소 (Si)',Mn:'망간 (Mn)',P:'인 (P)',S:'황 (S)',Cu:'구리 (Cu)',Ni:'니켈 (Ni)',Cr:'크롬 (Cr)',Mo:'몰리브덴 (Mo)',V:'바나듐 (V)',Nb:'니오브 (Nb)',Ti:'티타늄 (Ti)',B:'보론 (B)',Ceq:'탄소당량 (Ceq)'};
@@ -220,32 +221,62 @@ export default function App() {
   const [storageReady, setStorageReady] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
 
-  // 앱 시작 시 저장된 데이터 불러오기 (localStorage)
+  // ── Supabase: 앱 시작 시 코드 DB + 이력 불러오기 ──────────
   useEffect(() => {
-    try {
-      const sc = localStorage.getItem('qc-codes');
-      if (sc) { const loaded = JSON.parse(sc); setCodes(loaded); setSelCode(String(loaded[0]?.id || '')); }
-      const sh = localStorage.getItem('qc-history');
-      if (sh) setHistory(JSON.parse(sh));
-    } catch {}
-    setStorageReady(true);
+    (async () => {
+      // 코드 DB 로드
+      const { data: codeRows } = await supabase
+        .from('qc_codes')
+        .select('*')
+        .order('id', { ascending: true });
+
+      if (codeRows && codeRows.length > 0) {
+        setCodes(codeRows);
+        setSelCode(String(codeRows[0].id));
+      } else {
+        // 최초 실행: 기본 코드를 Supabase에 삽입
+        const { data: inserted } = await supabase
+          .from('qc_codes')
+          .insert(DEFAULT_CODES)
+          .select();
+        if (inserted) { setCodes(inserted); setSelCode(String(inserted[0].id)); }
+      }
+
+      // 이력 로드 (최신순 100건)
+      const { data: histRows } = await supabase
+        .from('qc_history')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (histRows) setHistory(histRows);
+
+      setStorageReady(true);
+    })();
   }, []);
 
-  // 코드 변경 시 자동 저장
-  useEffect(() => {
-    if (!storageReady) return;
-    try {
-      localStorage.setItem('qc-codes', JSON.stringify(codes));
-      setSaveStatus('저장됨 ✓');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } catch { setSaveStatus('저장 실패 ✗'); }
-  }, [codes, storageReady]);
+  // ── Supabase: 코드 저장 함수 ────────────────────────────────
+  async function saveCode(entry) {
+    setSaveStatus('저장 중...');
+    const { error } = await supabase
+      .from('qc_codes')
+      .upsert(entry, { onConflict: 'id' });
+    if (error) { setSaveStatus('저장 실패 ✗'); return false; }
+    setSaveStatus('저장됨 ✓');
+    setTimeout(() => setSaveStatus(''), 2000);
+    return true;
+  }
 
-  // 이력 변경 시 자동 저장
-  useEffect(() => {
-    if (!storageReady) return;
-    try { localStorage.setItem('qc-history', JSON.stringify(history)); } catch {}
-  }, [history, storageReady]);
+  // ── Supabase: 코드 삭제 함수 ────────────────────────────────
+  async function deleteCode(id) {
+    const { error } = await supabase.from('qc_codes').delete().eq('id', id);
+    if (!error) setCodes(prev => prev.filter(x => x.id !== id));
+  }
+
+  // ── Supabase: 이력 저장 함수 ────────────────────────────────
+  async function saveHistory(entry) {
+    const { data } = await supabase.from('qc_history').insert(entry).select();
+    if (data) setHistory(prev => [...data, ...prev]);
+  }
 
   // 업로드
   const [file, setFile] = useState(null);
@@ -332,12 +363,12 @@ Units: chemical=wt%, Strength=MPa, Elongation=%, Charpy=J. Use null if not found
       const chemComps = dims.map(d => calcChemComp(d, appliedCode));
       const mechComps = dims.map(d => calcMechComp(d, appliedCode));
       const totalFail = [...chemComps, ...mechComps].reduce((s, m) => s + (m?.fail || 0), 0);
-      setHistory(h => [{
+      await saveHistory({
         date: new Date().toLocaleString('ko-KR',{year:'2-digit',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}),
         filename: file.name, grade: parsed.steelGrade||'—',
         maker: parsed.manufacturer||'—', heat: parsed.heatNo||'—',
         result: totalFail === 0 ? 'pass' : 'fail', fail: totalFail
-      }, ...h]);
+      });
     } catch(e) {
       setError('분석 오류: ' + e.message);
     }
@@ -646,7 +677,11 @@ Units: chemical=wt%, Strength=MPa, Elongation=%, Charpy=J. Use null if not found
             <div style={{display:'flex',alignItems:'center',marginBottom:12}}>
               <span style={{fontSize:13,color:c.t2}}>등록 코드: <b style={{color:c.acc2,fontFamily:'monospace'}}>{codes.length}</b>개</span>
               <div style={{marginLeft:'auto',display:'flex',gap:8}}>
-                <button style={css.btn('s')} onClick={() => { if(confirm('기본 코드 목록으로 초기화하시겠습니까?\n추가/수정한 코드는 모두 삭제됩니다.')) setCodes(DEFAULT_CODES); }}>초기화</button>
+                <button style={css.btn('s')} onClick={async () => { if(confirm('기본 코드 목록으로 초기화하시겠습니까?\n추가/수정한 코드는 모두 삭제됩니다.')) {
+                    await supabase.from('qc_codes').delete().neq('id', 0);
+                    const { data: ins } = await supabase.from('qc_codes').insert(DEFAULT_CODES).select();
+                    if(ins) { setCodes(ins); setSaveStatus('초기화 완료 ✓'); setTimeout(()=>setSaveStatus(''),2000); }
+                  }}}>초기화</button>
                 <button style={css.btn('p')} onClick={() => setModal('add')}>＋ 코드 추가</button>
               </div>
             </div>
@@ -671,7 +706,7 @@ Units: chemical=wt%, Strength=MPa, Elongation=%, Charpy=J. Use null if not found
                         <td style={css.td}>
                           <div style={{display:'flex',gap:6}}>
                             <button style={css.btn('sm')} onClick={() => setModal(cd.id)}>수정</button>
-                            <button style={{...css.btn('sm'),color:'#f87171',border:'1px solid rgba(220,38,38,.3)'}} onClick={() => { if(confirm(`"${cd.code}" 삭제하시겠습니까?`)) setCodes(prev => prev.filter(x => x.id !== cd.id)); }}>삭제</button>
+                            <button style={{...css.btn('sm'),color:'#f87171',border:'1px solid rgba(220,38,38,.3)'}} onClick={() => { if(confirm(`"${cd.code}" 삭제하시겠습니까?`)) deleteCode(cd.id); }}>삭제</button>
                           </div>
                         </td>
                       </tr>
@@ -718,9 +753,12 @@ Units: chemical=wt%, Strength=MPa, Elongation=%, Charpy=J. Use null if not found
         <CodeModal
           editing={modal === 'add' ? null : modal}
           codes={codes}
-          onSave={entry => {
-            setCodes(prev => modal === 'add' ? [...prev, entry] : prev.map(x => x.id === modal ? entry : x));
-            setModal(null);
+          onSave={async entry => {
+            const ok = await saveCode(entry);
+            if (ok) {
+              setCodes(prev => modal === 'add' ? [...prev, entry] : prev.map(x => x.id === modal ? entry : x));
+              setModal(null);
+            }
           }}
           onClose={() => setModal(null)}
         />
