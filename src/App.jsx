@@ -255,15 +255,22 @@ export default function App() {
   }, []);
 
   // ── Supabase: 코드 저장 함수 ────────────────────────────────
-  async function saveCode(entry) {
+  async function saveCode(entry, isNew) {
     setSaveStatus('저장 중...');
-    const { error } = await supabase
-      .from('qc_codes')
-      .upsert(entry, { onConflict: 'id' });
-    if (error) { setSaveStatus('저장 실패 ✗'); return false; }
+    let result;
+    if (isNew) {
+      // 신규: id 제외하고 insert (DB가 bigserial로 자동 생성)
+      const { id: _drop, ...rest } = entry;
+      result = await supabase.from('qc_codes').insert(rest).select().single();
+    } else {
+      // 수정: id 기준 update
+      const { id, ...rest } = entry;
+      result = await supabase.from('qc_codes').update(rest).eq('id', id).select().single();
+    }
+    if (result.error) { setSaveStatus('저장 실패 ✗'); console.error(result.error); return null; }
     setSaveStatus('저장됨 ✓');
     setTimeout(() => setSaveStatus(''), 2000);
-    return true;
+    return result.data;
   }
 
   // ── Supabase: 코드 삭제 함수 ────────────────────────────────
@@ -754,9 +761,10 @@ Units: chemical=wt%, Strength=MPa, Elongation=%, Charpy=J. Use null if not found
           editing={modal === 'add' ? null : modal}
           codes={codes}
           onSave={async entry => {
-            const ok = await saveCode(entry);
-            if (ok) {
-              setCodes(prev => modal === 'add' ? [...prev, entry] : prev.map(x => x.id === modal ? entry : x));
+            const isNew = modal === 'add';
+            const saved = await saveCode(entry, isNew);
+            if (saved) {
+              setCodes(prev => isNew ? [...prev, saved] : prev.map(x => x.id === modal ? saved : x));
               setModal(null);
             }
           }}
