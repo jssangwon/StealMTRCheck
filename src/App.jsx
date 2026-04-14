@@ -334,45 +334,78 @@ export default function App() {
           max_tokens: 2000,
           system: `You are a steel mill test certificate (MTC) data extractor. Output ONLY a single valid JSON object. No explanation. Start with { end with }.
 
-STEP 1 — LOCATE THE CHEMICAL COMPOSITION TABLE
-Find the table labeled "화학 성분" or "CHEMICAL COMPOSITION(%)".
-IMPORTANT: Do NOT confuse coating weight (부착량, g/m²) with chemical composition values.
-The chemical columns are C, P, S, Si, Mn, Sol(Al), Ti, Cu, Ni, Cr, Mo, V, Nb, B, Ceq.
-Ignore all other columns (thickness, width, length, tensile strength, yield strength, elongation, coating weight).
+══════════════════════════════════════════
+CRITICAL INSTRUCTION: CHEMICAL UNIT CONVERSION
+══════════════════════════════════════════
 
-STEP 2 — READ THE MULTIPLIER ROW
-Look for a row immediately below the column headers that contains multiplier text.
-This row may show different multipliers for different columns, e.g.:
-  C column header area: "X 1000"  → that column's raw values must be divided by 1,000
-  P column header area: (no text, same group as C) → same multiplier as adjacent column
-  S column header area: (no text, same group as C) → same multiplier as adjacent column
-  Si column header area: "X 100"  → that column's raw values must be divided by 100
-  Mn column header area: "X 100"  → that column's raw values must be divided by 100
-  Sol column header area: "X 1000" → divide by 1,000
-CRITICAL: Each multiplier applies ONLY to its own column. Map multipliers to columns by their horizontal position.
+STEP 1 — IDENTIFY CHEMICAL COLUMNS ONLY
+The chemical composition columns are: C, Si, Mn, P, S, Cu, Ni, Cr, Mo, V, Nb, Ti, B, Ceq, Sol(Al).
+WARNING: Do NOT read coating weight (부착량, g/m², COATING WEIGHT) as chemical values.
+WARNING: Do NOT read tensile/yield strength numbers as chemical values.
+Only extract numbers from columns clearly labeled with element symbols.
 
-STEP 3 — HANDLE SPECIAL NOTATIONS
-- "TR" or "Tr" = trace amount → use null
-- "—" or blank = not measured → use null
-- Whole-table notation "×1000" in header/footer → divide ALL chemical values by 1,000
-- Per-column digit codes (2,3,4,5) → 2=÷100, 3=÷1000, 4=÷10000, 5=÷100000
-- No multiplier shown but values > 5 → divide by 1,000
+STEP 2 — DETECT UNIT FORMAT (choose exactly one)
 
-STEP 4 — VALIDATE
-Every chemical output value MUST be in wt% range 0.0001~2.0.
-If C=0.036, P=0.009, S=0.003, Mn=0.18 — these are correct wt% values.
-If you get C=0.125 or Mn=0.9 for a typical structural steel, something is wrong — recheck column mapping.
+FORMAT A — Hyundai Steel (현대제철) digit-code style:
+  The legend shows: "2:×100  3:×1,000  4:×10,000  5:×100,000"
+  A row of single digit numbers (2, 3, 4, or 5) appears between the column headers and the data row.
+  Each digit is positioned directly above its column's data value.
+  Rule: read the digit above each column independently, then apply:
+    digit 2 → divide value by 100
+    digit 3 → divide value by 1,000
+    digit 4 → divide value by 10,000
+    digit 5 → divide value by 100,000
+  
+  CONCRETE EXAMPLE from actual Hyundai Steel certificate:
+    Digit row:  C=4,  Si=3, Mn=3, P=4,   S=4
+    Raw values: C=548, Si=7, Mn=890, P=100, S=58
+    Converted:  C=548÷10000=0.0548, Si=7÷1000=0.007, Mn=890÷1000=0.890, P=100÷10000=0.010, S=58÷10000=0.0058
+  
+  COMMON MISTAKE TO AVOID: Do not apply the same digit to all columns.
+  Each column has its OWN digit. Read each digit separately by horizontal position.
+
+FORMAT B — Dongbu Steel (동부제철) per-column text style:
+  Each column header cell contains its own multiplier text: "X 1000", "X 100", "×1/1000" etc.
+  Rule: for each column, find its own header text and divide its value by that number.
+  
+  CONCRETE EXAMPLE from actual Dongbu Steel certificate:
+    C header: "X 1000" → raw value 36 → 36÷1000 = 0.036
+    P header: "X 1000" → raw value 9  → 9÷1000  = 0.009
+    S header: "X 1000" → raw value 3  → 3÷1000  = 0.003
+    Mn header: "X 100" → raw value 18 → 18÷100  = 0.18
+    Sol header: "X 1000" → raw value 19 → 19÷1000 = 0.019
+
+FORMAT C — Dongkuk Steel (동국제강) whole-table style:
+  A single "×1000" or "<×1000>" notation applies to ALL chemical columns uniformly.
+  Rule: divide every chemical value by 1,000.
+
+FORMAT D — Already in wt%:
+  No multiplier notation present AND values are already in range 0.0001~2.0.
+  Rule: use values as-is.
+
+FORMAT E — No notation but abnormally large values (>5):
+  Rule: divide by 1,000.
+
+STEP 3 — VALIDATE EVERY VALUE
+After conversion, every chemical value MUST satisfy: 0.0001 ≤ value ≤ 2.0 wt%
+If any value falls outside this range, you made an error — recheck digit code or multiplier for that column.
+
+STEP 4 — SPECIAL VALUES
+"TR", "Tr", "trace" → null
+"—", blank, "-" → null
 
 STEP 5 — MECHANICAL PROPERTIES
-Extract yieldStrength (항복강도, Y.P), tensileStrength (인장강도, T.S), elongation (연신율, EL.) in correct units.
-yieldStrength and tensileStrength in MPa (N/mm²). elongation in %. charpy in J.
+YP or 항복강도 or Yield Point → yieldStrength (MPa)
+TS or 인장강도 or Tensile Strength → tensileStrength (MPa)
+EL or 연신율 or Elongation → elongation (%)
+Charpy or 충격값 → charpy (J)
 
-MULTIPLE DIMENSIONS: Extract all thickness rows separately if present.
+MULTIPLE DIMENSIONS: If multiple thickness rows exist, extract each separately. If chemistry is shared, copy to all dimensions.
 
-Output ONLY:
-{"steelGrade":"exact grade e.g. SGCC","manufacturer":"mill name","heatNo":"heat/charge number","orderNo":"cert number","dimensions":[{"thickness":"e.g. 1.0mm","chemical":{"C":null,"Si":null,"Mn":null,"P":null,"S":null,"Cu":null,"Ni":null,"Cr":null,"Mo":null,"V":null,"Nb":null,"Ti":null,"B":null,"Ceq":null},"mechanical":{"yieldStrength":null,"tensileStrength":null,"elongation":null,"charpy":null}}]}
+Output ONLY this JSON:
+{"steelGrade":"exact grade e.g. SS400","manufacturer":"mill name","heatNo":"heat/charge number","orderNo":"cert number","dimensions":[{"thickness":"e.g. 4.5mm","chemical":{"C":null,"Si":null,"Mn":null,"P":null,"S":null,"Cu":null,"Ni":null,"Cr":null,"Mo":null,"V":null,"Nb":null,"Ti":null,"B":null,"Ceq":null},"mechanical":{"yieldStrength":null,"tensileStrength":null,"elongation":null,"charpy":null}}]}
 
-Use null for any value not found or TR.`,
+Use null for any value not found.`,
           messages: [{ role:'user', content:[
             part,
             { type:'text', text:'이 철판 성적서의 화학조성과 기계적 성질을 모두 추출하여 JSON으로 반환해주세요.' }
