@@ -395,10 +395,27 @@ STEP 4 — SPECIAL VALUES
 "—", blank, "-" → null
 
 STEP 5 — MECHANICAL PROPERTIES
-YP or 항복강도 or Yield Point → yieldStrength (MPa)
-TS or 인장강도 or Tensile Strength → tensileStrength (MPa)
-EL or 연신율 or Elongation → elongation (%)
-Charpy or 충격값 → charpy (J)
+Locate each property by its column HEADER label, not by position alone.
+
+yieldStrength: column labeled "YP", "Y.P", "항복강도", "Yield" → value in MPa or N/mm² (typical range: 150~700)
+tensileStrength: column labeled "TS", "T.S", "인장강도", "Tensile" → value in MPa or N/mm² (typical range: 300~900)
+elongation: column labeled "EL", "EL.", "연신율", "Elongation", "연신율(%)" → value in % (typical range: 10~50)
+charpy: column labeled "Charpy", "충격값", "CVN" → value in J
+
+CRITICAL WARNING — DO NOT CONFUSE THESE COLUMNS WITH ELONGATION:
+Many certificates have additional columns AFTER elongation that look like small numbers:
+  "n" column = strain hardening exponent (typical value: 0.1~0.3) — NOT elongation
+  "r" column = Lankford r-value (typical value: 0.5~3.0) — NOT elongation
+  "HR30T", "HR30N" = hardness values — NOT elongation
+  "Bend" = bending test result — NOT elongation
+The elongation value is ALWAYS a percentage typically between 10% and 50%.
+If you find a value like 9 or 37 next to the tensile data, verify: is it under the "EL." header? 
+A value of 9% elongation is extremely unusual — double-check. 37.4% is a normal elongation value.
+
+CONCRETE EXAMPLE (KG Dongbu Steel / 현대제철 type):
+  Table columns: YP=247.1 | TS=357.9 | EL.=37.4 | n=(ignore) | r=(ignore)
+  Correct extraction: yieldStrength=247.1, tensileStrength=357.9, elongation=37.4
+  WRONG extraction: elongation=9 ← this is the "n" column value, NOT elongation
 
 MULTIPLE DIMENSIONS: If multiple thickness rows exist, extract each separately. If chemistry is shared, copy to all dimensions.
 
