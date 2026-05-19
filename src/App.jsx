@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { supabase } from "./supabaseClient";
 
 const CHEM_ORDER = ['C','Si','Mn','P','S','Cu','Ni','Cr','Mo','V','Nb','Ti','B','Ceq'];
 const CHEM_LABELS = {C:'탄소 (C)',Si:'규소 (Si)',Mn:'망간 (Mn)',P:'인 (P)',S:'황 (S)',Cu:'구리 (Cu)',Ni:'니켈 (Ni)',Cr:'크롬 (Cr)',Mo:'몰리브덴 (Mo)',V:'바나듐 (V)',Nb:'니오브 (Nb)',Ti:'티타늄 (Ti)',B:'보론 (B)',Ceq:'탄소당량 (Ceq)'};
@@ -221,69 +220,32 @@ export default function App() {
   const [storageReady, setStorageReady] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
 
-  // ── Supabase: 앱 시작 시 코드 DB + 이력 불러오기 ──────────
+  // 앱 시작 시 저장된 데이터 불러오기 (localStorage)
   useEffect(() => {
-    (async () => {
-      // 코드 DB 로드
-      const { data: codeRows } = await supabase
-        .from('qc_codes')
-        .select('*')
-        .order('id', { ascending: true });
-
-      if (codeRows && codeRows.length > 0) {
-        setCodes(codeRows);
-        setSelCode(String(codeRows[0].id));
-      } else {
-        // 최초 실행: 기본 코드를 Supabase에 삽입
-        const { data: inserted } = await supabase
-          .from('qc_codes')
-          .insert(DEFAULT_CODES)
-          .select();
-        if (inserted) { setCodes(inserted); setSelCode(String(inserted[0].id)); }
-      }
-
-      // 이력 로드 (최신순 100건)
-      const { data: histRows } = await supabase
-        .from('qc_history')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
-      if (histRows) setHistory(histRows);
-
-      setStorageReady(true);
-    })();
+    try {
+      const sc = localStorage.getItem('qc-codes');
+      if (sc) { const loaded = JSON.parse(sc); setCodes(loaded); setSelCode(String(loaded[0]?.id || '')); }
+      const sh = localStorage.getItem('qc-history');
+      if (sh) setHistory(JSON.parse(sh));
+    } catch {}
+    setStorageReady(true);
   }, []);
 
-  // ── Supabase: 코드 저장 함수 ────────────────────────────────
-  async function saveCode(entry, isNew) {
-    setSaveStatus('저장 중...');
-    let result;
-    if (isNew) {
-      // 신규: id 제외하고 insert (DB가 bigserial로 자동 생성)
-      const { id: _drop, ...rest } = entry;
-      result = await supabase.from('qc_codes').insert(rest).select().single();
-    } else {
-      // 수정: id 기준 update
-      const { id, ...rest } = entry;
-      result = await supabase.from('qc_codes').update(rest).eq('id', id).select().single();
-    }
-    if (result.error) { setSaveStatus('저장 실패: ' + result.error.message); console.error(result.error); return null; }
-    setSaveStatus('저장됨 ✓');
-    setTimeout(() => setSaveStatus(''), 2000);
-    return result.data;
-  }
+  // 코드 변경 시 자동 저장
+  useEffect(() => {
+    if (!storageReady) return;
+    try {
+      localStorage.setItem('qc-codes', JSON.stringify(codes));
+      setSaveStatus('저장됨 ✓');
+      setTimeout(() => setSaveStatus(''), 2000);
+    } catch { setSaveStatus('저장 실패 ✗'); }
+  }, [codes, storageReady]);
 
-  // ── Supabase: 코드 삭제 함수 ────────────────────────────────
-  async function deleteCode(id) {
-    const { error } = await supabase.from('qc_codes').delete().eq('id', id);
-    if (!error) setCodes(prev => prev.filter(x => x.id !== id));
-  }
-
-  // ── Supabase: 이력 저장 함수 ────────────────────────────────
-  async function saveHistory(entry) {
-    const { data } = await supabase.from('qc_history').insert(entry).select();
-    if (data) setHistory(prev => [...data, ...prev]);
-  }
+  // 이력 변경 시 자동 저장
+  useEffect(() => {
+    if (!storageReady) return;
+    try { localStorage.setItem('qc-history', JSON.stringify(history)); } catch {}
+  }, [history, storageReady]);
 
   // 업로드
   const [file, setFile] = useState(null);
@@ -331,98 +293,54 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
+          max_tokens: 1000,
           system: `You are a steel mill test certificate (MTC) data extractor. Output ONLY a single valid JSON object. No explanation. Start with { end with }.
 
-══════════════════════════════════════════
-CRITICAL INSTRUCTION: CHEMICAL UNIT CONVERSION
-══════════════════════════════════════════
-
 STEP 1 — IDENTIFY CHEMICAL COLUMNS ONLY
-The chemical composition columns are: C, Si, Mn, P, S, Cu, Ni, Cr, Mo, V, Nb, Ti, B, Ceq, Sol(Al).
-WARNING: Do NOT read coating weight (부착량, g/m², COATING WEIGHT) as chemical values.
-WARNING: Do NOT read tensile/yield strength numbers as chemical values.
-Only extract numbers from columns clearly labeled with element symbols.
+Chemical columns: C, Si, Mn, P, S, Cu, Ni, Cr, Mo, V, Nb, Ti, B, Ceq, Sol(Al).
+Do NOT read coating weight (부착량, g/m²) or tensile/yield strength numbers as chemical values.
 
-STEP 2 — DETECT UNIT FORMAT (choose exactly one)
+STEP 2 — DETECT UNIT FORMAT
 
-FORMAT A — Hyundai Steel (현대제철) digit-code style:
-  The legend shows: "2:×100  3:×1,000  4:×10,000  5:×100,000"
-  A row of single digit numbers (2, 3, 4, or 5) appears between the column headers and the data row.
-  Each digit is positioned directly above its column's data value.
-  Rule: read the digit above each column independently, then apply:
-    digit 2 → divide value by 100
-    digit 3 → divide value by 1,000
-    digit 4 → divide value by 10,000
-    digit 5 → divide value by 100,000
-  
-  CONCRETE EXAMPLE from actual Hyundai Steel certificate:
-    Digit row:  C=4,  Si=3, Mn=3, P=4,   S=4
-    Raw values: C=548, Si=7, Mn=890, P=100, S=58
-    Converted:  C=548÷10000=0.0548, Si=7÷1000=0.007, Mn=890÷1000=0.890, P=100÷10000=0.010, S=58÷10000=0.0058
-  
-  COMMON MISTAKE TO AVOID: Do not apply the same digit to all columns.
-  Each column has its OWN digit. Read each digit separately by horizontal position.
+FORMAT A — Hyundai Steel (현대제철) digit-code:
+  Legend: "2:x100  3:x1,000  4:x10,000  5:x100,000"
+  A digit row appears between headers and data. Each digit applies to its own column only.
+  digit 2=divide by 100, 3=divide by 1000, 4=divide by 10000, 5=divide by 100000.
+  EXAMPLE: Digit row C=4,Si=3,Mn=3,P=4,S=4 / Raw C=548,Si=7,Mn=890,P=100,S=58
+  Result: C=0.0548, Si=0.007, Mn=0.890, P=0.010, S=0.0058
+  WARNING: Each column has its OWN digit. Do not apply one digit to all columns.
 
-FORMAT B — Dongbu Steel (동부제철) per-column text style:
-  Each column header cell contains its own multiplier text: "X 1000", "X 100", "×1/1000" etc.
-  Rule: for each column, find its own header text and divide its value by that number.
-  
-  CONCRETE EXAMPLE from actual Dongbu Steel certificate:
-    C header: "X 1000" → raw value 36 → 36÷1000 = 0.036
-    P header: "X 1000" → raw value 9  → 9÷1000  = 0.009
-    S header: "X 1000" → raw value 3  → 3÷1000  = 0.003
-    Mn header: "X 100" → raw value 18 → 18÷100  = 0.18
-    Sol header: "X 1000" → raw value 19 → 19÷1000 = 0.019
+FORMAT B — Dongbu Steel (동부제철) per-column text:
+  Each column header has its own text: "X 1000", "X 100", etc.
+  EXAMPLE: C"X1000"=36->0.036, P"X1000"=9->0.009, S"X1000"=3->0.003, Mn"X100"=18->0.18
 
-FORMAT C — Dongkuk Steel (동국제강) whole-table style:
-  A single "×1000" or "<×1000>" notation applies to ALL chemical columns uniformly.
-  Rule: divide every chemical value by 1,000.
+FORMAT C — Dongkuk Steel (동국제강) whole-table:
+  Single "x1000" notation for ALL columns. Divide everything by 1,000.
 
-FORMAT D — Already in wt%:
-  No multiplier notation present AND values are already in range 0.0001~2.0.
-  Rule: use values as-is.
+FORMAT D — Already wt%: values in 0.0001~2.0, use as-is.
 
-FORMAT E — No notation but abnormally large values (>5):
-  Rule: divide by 1,000.
+FORMAT E — No notation, values >5: divide by 1,000.
 
-STEP 3 — VALIDATE EVERY VALUE
-After conversion, every chemical value MUST satisfy: 0.0001 ≤ value ≤ 2.0 wt%
-If any value falls outside this range, you made an error — recheck digit code or multiplier for that column.
+STEP 3 — VALIDATE: every chemical value must be 0.0001~2.0 wt%. Recheck if outside range.
 
-STEP 4 — SPECIAL VALUES
-"TR", "Tr", "trace" → null
-"—", blank, "-" → null
+STEP 4 — SPECIAL: "TR"/"Tr"=null, blank/"—"=null
 
-STEP 5 — MECHANICAL PROPERTIES
-Locate each property by its column HEADER label, not by position alone.
+STEP 5 — MECHANICAL PROPERTIES (identify by column header, not position)
+yieldStrength: "YP","Y.P","항복강도" → MPa (range 150~700)
+tensileStrength: "TS","T.S","인장강도" → MPa (range 300~900)
+elongation: "EL","EL.","연신율" → % (range 10~50)
+charpy: "Charpy","충격값" → J
 
-yieldStrength: column labeled "YP", "Y.P", "항복강도", "Yield" → value in MPa or N/mm² (typical range: 150~700)
-tensileStrength: column labeled "TS", "T.S", "인장강도", "Tensile" → value in MPa or N/mm² (typical range: 300~900)
-elongation: column labeled "EL", "EL.", "연신율", "Elongation", "연신율(%)" → value in % (typical range: 10~50)
-charpy: column labeled "Charpy", "충격값", "CVN" → value in J
+WARNING: Do NOT confuse elongation with adjacent columns:
+  "n" column (strain hardening ~0.1~0.3), "r" column (Lankford ~0.5~3.0), "HR30T" (hardness) are NOT elongation.
+  EXAMPLE: YP=247.1, TS=357.9, EL.=37.4, n=9 → elongation=37.4, NOT 9
 
-CRITICAL WARNING — DO NOT CONFUSE THESE COLUMNS WITH ELONGATION:
-Many certificates have additional columns AFTER elongation that look like small numbers:
-  "n" column = strain hardening exponent (typical value: 0.1~0.3) — NOT elongation
-  "r" column = Lankford r-value (typical value: 0.5~3.0) — NOT elongation
-  "HR30T", "HR30N" = hardness values — NOT elongation
-  "Bend" = bending test result — NOT elongation
-The elongation value is ALWAYS a percentage typically between 10% and 50%.
-If you find a value like 9 or 37 next to the tensile data, verify: is it under the "EL." header? 
-A value of 9% elongation is extremely unusual — double-check. 37.4% is a normal elongation value.
+MULTIPLE DIMENSIONS: Extract all thickness rows. Copy shared chemistry to all dimensions.
 
-CONCRETE EXAMPLE (KG Dongbu Steel / 현대제철 type):
-  Table columns: YP=247.1 | TS=357.9 | EL.=37.4 | n=(ignore) | r=(ignore)
-  Correct extraction: yieldStrength=247.1, tensileStrength=357.9, elongation=37.4
-  WRONG extraction: elongation=9 ← this is the "n" column value, NOT elongation
+Output ONLY:
+{"steelGrade":"","manufacturer":"","heatNo":"","orderNo":"","dimensions":[{"thickness":"","chemical":{"C":null,"Si":null,"Mn":null,"P":null,"S":null,"Cu":null,"Ni":null,"Cr":null,"Mo":null,"V":null,"Nb":null,"Ti":null,"B":null,"Ceq":null},"mechanical":{"yieldStrength":null,"tensileStrength":null,"elongation":null,"charpy":null}}]}
 
-MULTIPLE DIMENSIONS: If multiple thickness rows exist, extract each separately. If chemistry is shared, copy to all dimensions.
-
-Output ONLY this JSON:
-{"steelGrade":"exact grade e.g. SS400","manufacturer":"mill name","heatNo":"heat/charge number","orderNo":"cert number","dimensions":[{"thickness":"e.g. 4.5mm","chemical":{"C":null,"Si":null,"Mn":null,"P":null,"S":null,"Cu":null,"Ni":null,"Cr":null,"Mo":null,"V":null,"Nb":null,"Ti":null,"B":null,"Ceq":null},"mechanical":{"yieldStrength":null,"tensileStrength":null,"elongation":null,"charpy":null}}]}
-
-Use null for any value not found.`,
+Use null for not found.`,
           messages: [{ role:'user', content:[
             part,
             { type:'text', text:'이 철판 성적서의 화학조성과 기계적 성질을 모두 추출하여 JSON으로 반환해주세요.' }
@@ -445,12 +363,12 @@ Use null for any value not found.`,
       const chemComps = dims.map(d => calcChemComp(d, appliedCode));
       const mechComps = dims.map(d => calcMechComp(d, appliedCode));
       const totalFail = [...chemComps, ...mechComps].reduce((s, m) => s + (m?.fail || 0), 0);
-      await saveHistory({
+      setHistory(h => [{
         date: new Date().toLocaleString('ko-KR',{year:'2-digit',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}),
         filename: file.name, grade: parsed.steelGrade||'—',
         maker: parsed.manufacturer||'—', heat: parsed.heatNo||'—',
         result: totalFail === 0 ? 'pass' : 'fail', fail: totalFail
-      });
+      }, ...h]);
     } catch(e) {
       setError('분석 오류: ' + e.message);
     }
@@ -759,11 +677,7 @@ Use null for any value not found.`,
             <div style={{display:'flex',alignItems:'center',marginBottom:12}}>
               <span style={{fontSize:13,color:c.t2}}>등록 코드: <b style={{color:c.acc2,fontFamily:'monospace'}}>{codes.length}</b>개</span>
               <div style={{marginLeft:'auto',display:'flex',gap:8}}>
-                <button style={css.btn('s')} onClick={async () => { if(confirm('기본 코드 목록으로 초기화하시겠습니까?\n추가/수정한 코드는 모두 삭제됩니다.')) {
-                    await supabase.from('qc_codes').delete().neq('id', 0);
-                    const { data: ins } = await supabase.from('qc_codes').insert(DEFAULT_CODES).select();
-                    if(ins) { setCodes(ins); setSaveStatus('초기화 완료 ✓'); setTimeout(()=>setSaveStatus(''),2000); }
-                  }}}>초기화</button>
+                <button style={css.btn('s')} onClick={() => { if(confirm('기본 코드 목록으로 초기화하시겠습니까?\n추가/수정한 코드는 모두 삭제됩니다.')) setCodes(DEFAULT_CODES); }}>초기화</button>
                 <button style={css.btn('p')} onClick={() => setModal('add')}>＋ 코드 추가</button>
               </div>
             </div>
@@ -788,7 +702,7 @@ Use null for any value not found.`,
                         <td style={css.td}>
                           <div style={{display:'flex',gap:6}}>
                             <button style={css.btn('sm')} onClick={() => setModal(cd.id)}>수정</button>
-                            <button style={{...css.btn('sm'),color:'#f87171',border:'1px solid rgba(220,38,38,.3)'}} onClick={() => { if(confirm(`"${cd.code}" 삭제하시겠습니까?`)) deleteCode(cd.id); }}>삭제</button>
+                            <button style={{...css.btn('sm'),color:'#f87171',border:'1px solid rgba(220,38,38,.3)'}} onClick={() => { if(confirm(`"${cd.code}" 삭제하시겠습니까?`)) setCodes(prev => prev.filter(x => x.id !== cd.id)); }}>삭제</button>
                           </div>
                         </td>
                       </tr>
@@ -835,13 +749,9 @@ Use null for any value not found.`,
         <CodeModal
           editing={modal === 'add' ? null : modal}
           codes={codes}
-          onSave={async entry => {
-            const isNew = modal === 'add';
-            const saved = await saveCode(entry, isNew);
-            if (saved) {
-              setCodes(prev => isNew ? [...prev, saved] : prev.map(x => x.id === modal ? saved : x));
-              setModal(null);
-            }
+          onSave={entry => {
+            setCodes(prev => modal === 'add' ? [...prev, entry] : prev.map(x => x.id === modal ? entry : x));
+            setModal(null);
           }}
           onClose={() => setModal(null)}
         />
