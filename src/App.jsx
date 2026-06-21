@@ -371,7 +371,14 @@ Use null for not found.`,
         })
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
+      if (data.error) {
+        const msg = data.error.message || '';
+        // 모델 만료/오타 등 model 관련 오류는 팀원이 알아보기 쉬운 메시지로 안내
+        if (/model/i.test(msg) && /not_found|invalid|deprecat/i.test(msg)) {
+          throw new Error('AI 모델 업데이트가 필요합니다. 관리자에게 문의해주세요. (원본: ' + msg + ')');
+        }
+        throw new Error(msg);
+      }
       const txt = data.content.map(i => i.text || '').join('');
       // 자연어가 섞여 나와도 JSON 부분만 추출
       const jsonStart = txt.indexOf('{');
